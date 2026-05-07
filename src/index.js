@@ -3,7 +3,7 @@ import { transforms } from './sv-utils.js';
 
 // Pin to the latest published lib at scaffold-time. Users can bump in their
 // own package.json afterward — the addon doesn't enforce it.
-const LIB_VERSION = '^0.0.2';
+const LIB_VERSION = '^0.1.0';
 
 const options = defineAddonOptions()
 	.add('mode', {
