@@ -42,21 +42,43 @@ const { test, testCases } = setupTest(
 		},
 		kinds: [
 			{
-				type: 'cloudflare-statusphere-form',
+				type: 'server-cloudflare-statusphere-form',
 				options: {
-					[addon.id]: { storage: 'cloudflare', demo: 'statusphere', demoStyle: 'form' }
+					[addon.id]: {
+						mode: 'server',
+						storage: 'cloudflare',
+						demo: 'statusphere',
+						demoStyle: 'form'
+					}
 				}
 			},
 			{
-				type: 'memory-login-remote',
+				type: 'server-memory-login-remote',
 				options: {
-					[addon.id]: { storage: 'memory', demo: 'login', demoStyle: 'remote' }
+					[addon.id]: {
+						mode: 'server',
+						storage: 'memory',
+						demo: 'login',
+						demoStyle: 'remote'
+					}
 				}
 			},
 			{
-				type: 'upstash-no-demo',
+				type: 'server-upstash-no-demo',
 				options: {
-					[addon.id]: { storage: 'upstash', demo: 'none' }
+					[addon.id]: { mode: 'server', storage: 'upstash', demo: 'none' }
+				}
+			},
+			{
+				type: 'browser-statusphere',
+				options: {
+					[addon.id]: { mode: 'browser', demo: 'statusphere' }
+				}
+			},
+			{
+				type: 'browser-no-demo',
+				options: {
+					[addon.id]: { mode: 'browser', demo: 'none' }
 				}
 			}
 		],
@@ -72,6 +94,72 @@ test.concurrent.for(testCases)(
 		const opts = testCase.kind.options[addon.id];
 
 		const atproto = read(cwd, 'src/lib/atproto/index.ts');
+		const pkg = JSON.parse(read(cwd, 'package.json'));
+
+		// Vite config (.ts or .js depending on variant) is patched to bind 127.0.0.1 — both modes
+		const viteTs = path.resolve(cwd, 'vite.config.ts');
+		const viteJs = path.resolve(cwd, 'vite.config.js');
+		const vitePath = fs.existsSync(viteTs) ? viteTs : viteJs;
+		const vite = fs.readFileSync(vitePath, 'utf8');
+		expect(vite).toContain("host: '127.0.0.1'");
+
+		expect(pkg.dependencies?.['@svelte-atproto/oauth']).toBeDefined();
+
+		// =================================================================
+		// Browser mode
+		// =================================================================
+		if (opts.mode === 'browser') {
+			expect(atproto).toContain('createAtprotoBrowserAuth');
+			expect(atproto).not.toContain('createAtprotoAuth(');
+			if (opts.demo === 'statusphere') {
+				expect(atproto).toContain("scope: 'atproto repo:xyz.statusphere.status'");
+			} else {
+				expect(atproto).toContain("scope: 'atproto'");
+			}
+
+			// Browser mode: no hooks.server.ts, no app.d.ts changes, no .env.example
+			expect(fs.existsSync(path.resolve(cwd, 'src/hooks.server.ts'))).toBe(false);
+			expect(pkg.scripts?.['atproto:setup']).toBeUndefined();
+
+			// Metadata route IS scaffolded
+			const metadata = read(cwd, 'src/routes/oauth-client-metadata.json/+server.ts');
+			expect(metadata).toContain('atproto.metadata');
+			expect(metadata).toContain('prerender = true');
+
+			// +layout.svelte is patched with onMount(init)
+			const layout = read(cwd, 'src/routes/+layout.svelte');
+			expect(layout).toContain('atproto.init');
+
+			const demoDir = path.resolve(cwd, 'src/routes/demo/atproto');
+			if (opts.demo === 'none') {
+				expect(fs.existsSync(demoDir)).toBe(false);
+				return;
+			}
+
+			expect(fs.existsSync(demoDir)).toBe(true);
+			// Browser demo: no +page.server.ts files (everything client-side)
+			expect(fs.existsSync(path.resolve(demoDir, '+page.server.ts'))).toBe(false);
+			expect(fs.existsSync(path.resolve(demoDir, 'login/+page.server.ts'))).toBe(false);
+
+			const indexPage = read(cwd, 'src/routes/demo/atproto/+page.svelte');
+			expect(indexPage).toContain('atproto.logout');
+			expect(indexPage).toContain('$user');
+
+			const loginPage = read(cwd, 'src/routes/demo/atproto/login/+page.svelte');
+			expect(loginPage).toContain('atproto.login');
+			expect(loginPage).toContain('$user');
+
+			if (opts.demo === 'statusphere') {
+				expect(indexPage).toContain('com.atproto.repo.putRecord');
+				expect(indexPage).toContain('recentRecords');
+				expect(indexPage).toContain('loadHandles');
+			}
+			return;
+		}
+
+		// =================================================================
+		// Server mode
+		// =================================================================
 		expect(atproto).toContain('createAtprotoAuth');
 		expect(atproto).toContain('env.ORIGIN');
 		expect(atproto).not.toContain('OAUTH_PUBLIC_URL');
@@ -111,16 +199,7 @@ test.concurrent.for(testCases)(
 		expect(env).toContain('COOKIE_SECRET=');
 		if (opts.storage === 'upstash') expect(env).toContain('UPSTASH_REDIS_REST_URL=');
 
-		const pkg = JSON.parse(read(cwd, 'package.json'));
-		expect(pkg.dependencies?.['@svelte-atproto/oauth']).toBeDefined();
 		expect(pkg.scripts?.['atproto:setup']).toContain('atproto-oauth setup');
-
-		// Vite config (.ts or .js depending on variant) is patched to bind 127.0.0.1
-		const viteTs = path.resolve(cwd, 'vite.config.ts');
-		const viteJs = path.resolve(cwd, 'vite.config.js');
-		const vitePath = fs.existsSync(viteTs) ? viteTs : viteJs;
-		const vite = fs.readFileSync(vitePath, 'utf8');
-		expect(vite).toContain("host: '127.0.0.1'");
 
 		// Demo files
 		const demoDir = path.resolve(cwd, 'src/routes/demo/atproto');

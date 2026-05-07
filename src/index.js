@@ -6,6 +6,21 @@ import { transforms } from './sv-utils.js';
 const LIB_VERSION = '^0.0.2';
 
 const options = defineAddonOptions()
+	.add('mode', {
+		question: 'Where will users authenticate?',
+		type: 'select',
+		default: 'server',
+		options: [
+			{
+				value: 'server',
+				label: 'On the server (SSR, KV/Redis sessions, full SvelteKit stack)'
+			},
+			{
+				value: 'browser',
+				label: 'In the browser (static-site compatible — GitHub Pages, etc.)'
+			}
+		]
+	})
 	.add('storage', {
 		question: 'Session storage:',
 		type: 'select',
@@ -21,7 +36,8 @@ const options = defineAddonOptions()
 				label: 'Upstash Redis (Edge-compatible, works on Vercel/Netlify/CF)'
 			},
 			{ value: 'none', label: "None — I'll wire it myself" }
-		]
+		],
+		condition: (o) => o.mode === 'server'
 	})
 	.add('demo', {
 		question: 'Scaffold a demo flow at /demo/atproto:',
@@ -48,7 +64,7 @@ const options = defineAddonOptions()
 				label: 'Remote functions (experimental — adds kit.experimental.remoteFunctions)'
 			}
 		],
-		condition: (o) => o.demo !== 'none'
+		condition: (o) => o.mode === 'server' && o.demo !== 'none'
 	})
 	.build();
 
@@ -61,114 +77,58 @@ export default defineAddon({
 	},
 
 	run: ({ directory, sv, options }) => {
-		const { storage, demo, demoStyle } = options;
-		const useRemote = demo !== 'none' && demoStyle === 'remote';
+		const { mode, storage, demo, demoStyle } = options;
 
 		// Library dependency
 		sv.dependency('@svelte-atproto/oauth', LIB_VERSION);
-		// Remote demos use valibot for command schemas
-		if (useRemote) sv.dependency('valibot', '^1.0.0');
+		// `@atcute/atproto` augments the atcute Client with lexicon types for
+		// `com.atproto.*` calls (e.g. `client.post('com.atproto.repo.putRecord', …)`
+		// type-checks). Required as a direct dep for TS to load the augmentation.
+		sv.dependency('@atcute/atproto', '^3.1.10');
 
-		// src/lib/atproto/index.ts — the OAuth config
-		sv.file(
-			`${directory.lib}/atproto/index.ts`,
-			transforms.text(() => buildAtprotoConfig({ storage, demo }))
-		);
-
-		// src/hooks.server.ts — mount the handle
-		sv.file(`${directory.src}/hooks.server.ts`, transforms.text(() => HOOKS_SERVER));
-
-		// src/app.d.ts — augment App.Locals only (no global page-data flow)
-		sv.file(`${directory.src}/app.d.ts`, transforms.text(() => APP_DTS));
-
-		// .env.example — append our section if not present
-		sv.file(
-			'.env.example',
-			transforms.text(({ content }) => mergeEnvExample(content, { storage }))
-		);
-
-		// package.json — add the atproto:setup / keygen / secret scripts
-		sv.file(
-			'package.json',
-			transforms.json((/** @type {{ data: { scripts?: Record<string, string> } }} */ file) => {
-				file.data.scripts = {
-					'atproto:setup': 'atproto-oauth setup',
-					'atproto:keygen': 'atproto-oauth keygen',
-					'atproto:secret': 'atproto-oauth secret',
-					...file.data.scripts
-				};
-			})
-		);
-
-		// vite.config.ts — force Vite to bind to 127.0.0.1.
-		// OAuth loopback (RFC 8252 §7.3) requires the literal IPv4 loopback
-		// address, not the hostname "localhost". On macOS/Linux with IPv6
-		// enabled, Vite's default `host: 'localhost'` resolves to `::1` only,
-		// and the PDS callback to `127.0.0.1:5173/oauth/callback` gets
-		// ECONNREFUSED. Pinning the host fixes that.
+		// vite.config — force 127.0.0.1 for OAuth loopback (RFC 8252 §7.3 requires
+		// the literal IPv4 loopback, not "localhost" — which resolves to ::1 on
+		// macOS/Linux and gives ECONNREFUSED for the OAuth callback).
 		sv.file('vite.config.ts', transforms.text(({ content }) => patchViteConfig(content)));
 		sv.file('vite.config.js', transforms.text(({ content }) => patchViteConfig(content)));
 
-		// Demo flow
-		if (demo !== 'none') {
-			const ctx = { demo };
-
-			// Login subpage shape is the same across login/statusphere demos.
-			if (demoStyle === 'remote') {
-				sv.file(
-					'svelte.config.js',
-					transforms.text(({ content }) => patchSvelteConfig(content))
-				);
-				sv.file(
-					'svelte.config.ts',
-					transforms.text(({ content }) => patchSvelteConfig(content))
-				);
-
-				sv.file(
-					`${directory.lib}/atproto/oauth.remote.ts`,
-					transforms.text(() => buildRemoteCommands({ demo }))
-				);
-
-				sv.file(
-					`${directory.kitRoutes}/demo/atproto/+page.svelte`,
-					transforms.text(() => buildDemoRemoteIndexPage(ctx))
-				);
-				sv.file(
-					`${directory.kitRoutes}/demo/atproto/+page.server.ts`,
-					transforms.text(() => buildDemoRemoteIndexServer(ctx))
-				);
-				sv.file(
-					`${directory.kitRoutes}/demo/atproto/login/+page.svelte`,
-					transforms.text(() => DEMO_REMOTE_LOGIN_PAGE)
-				);
-				sv.file(
-					`${directory.kitRoutes}/demo/atproto/login/+page.server.ts`,
-					transforms.text(() => DEMO_REMOTE_LOGIN_SERVER)
-				);
-			} else {
-				sv.file(
-					`${directory.kitRoutes}/demo/atproto/+page.svelte`,
-					transforms.text(() => buildDemoFormIndexPage(ctx))
-				);
-				sv.file(
-					`${directory.kitRoutes}/demo/atproto/+page.server.ts`,
-					transforms.text(() => buildDemoFormIndexServer(ctx))
-				);
-				sv.file(
-					`${directory.kitRoutes}/demo/atproto/login/+page.svelte`,
-					transforms.text(() => DEMO_FORM_LOGIN_PAGE)
-				);
-				sv.file(
-					`${directory.kitRoutes}/demo/atproto/login/+page.server.ts`,
-					transforms.text(() => DEMO_FORM_LOGIN_SERVER)
-				);
-			}
+		if (mode === 'browser') {
+			runBrowserMode({ directory, sv, demo });
+		} else {
+			runServerMode({ directory, sv, storage, demo, demoStyle });
 		}
 	},
 
 	nextSteps: ({ options }) => {
+		if (options.mode === 'browser') {
+			const lines = [
+				'atproto OAuth (browser-only) scaffolded.',
+				'',
+				'Edit src/lib/atproto/index.ts and replace the placeholder `origin` with',
+				'your deployed URL before publishing. (Dev uses a loopback client_id —',
+				'no public URL needed locally.)',
+				'',
+				'Run `pnpm install && pnpm dev`.'
+			];
+			if (options.demo !== 'none') {
+				const label = options.demo === 'statusphere' ? 'Statusphere' : 'Login';
+				lines.push('', `${label} demo scaffolded at /demo/atproto.`);
+				if (options.demo === 'statusphere') {
+					lines.push(
+						'Statusphere upgrades the OAuth scope to write `xyz.statusphere.status` records.'
+					);
+				}
+			}
+			lines.push(
+				'',
+				'Auth state is reactive in any component: `import { atproto } from "$lib/atproto"; const { user } = atproto;` then read `$user.did` / `$user.isLoggedIn`.'
+			);
+			return lines;
+		}
+
+		// Server mode
 		const lines = [
-			'atproto OAuth scaffolded.',
+			'atproto OAuth (server) scaffolded.',
 			'',
 			'Generate dev secrets:',
 			'  pnpm atproto:setup    # writes COOKIE_SECRET + CLIENT_ASSERTION_KEY into .env',
@@ -210,6 +170,119 @@ export default defineAddon({
 	}
 });
 
+// ---------------------------------------------------------------------------
+// Mode dispatchers
+// ---------------------------------------------------------------------------
+
+/** @param {{ directory: any; sv: any; storage: string; demo: string; demoStyle?: string }} args */
+function runServerMode({ directory, sv, storage, demo, demoStyle }) {
+	const useRemote = demo !== 'none' && demoStyle === 'remote';
+	if (useRemote) sv.dependency('valibot', '^1.0.0');
+
+	sv.file(
+		`${directory.lib}/atproto/index.ts`,
+		transforms.text(() => buildAtprotoConfig({ storage, demo }))
+	);
+
+	sv.file(`${directory.src}/hooks.server.ts`, transforms.text(() => HOOKS_SERVER));
+	sv.file(`${directory.src}/app.d.ts`, transforms.text(() => APP_DTS));
+
+	sv.file(
+		'.env.example',
+		transforms.text(({ content }) => mergeEnvExample(content, { storage }))
+	);
+
+	sv.file(
+		'package.json',
+		transforms.json((/** @type {{ data: { scripts?: Record<string, string> } }} */ file) => {
+			file.data.scripts = {
+				'atproto:setup': 'atproto-oauth setup',
+				'atproto:keygen': 'atproto-oauth keygen',
+				'atproto:secret': 'atproto-oauth secret',
+				...file.data.scripts
+			};
+		})
+	);
+
+	if (demo === 'none') return;
+	const ctx = { demo };
+
+	if (demoStyle === 'remote') {
+		sv.file('svelte.config.js', transforms.text(({ content }) => patchSvelteConfig(content)));
+		sv.file('svelte.config.ts', transforms.text(({ content }) => patchSvelteConfig(content)));
+
+		sv.file(
+			`${directory.lib}/atproto/oauth.remote.ts`,
+			transforms.text(() => buildRemoteCommands({ demo }))
+		);
+		sv.file(
+			`${directory.kitRoutes}/demo/atproto/+page.svelte`,
+			transforms.text(() => buildDemoRemoteIndexPage(ctx))
+		);
+		sv.file(
+			`${directory.kitRoutes}/demo/atproto/+page.server.ts`,
+			transforms.text(() => buildDemoRemoteIndexServer(ctx))
+		);
+		sv.file(
+			`${directory.kitRoutes}/demo/atproto/login/+page.svelte`,
+			transforms.text(() => DEMO_REMOTE_LOGIN_PAGE)
+		);
+		sv.file(
+			`${directory.kitRoutes}/demo/atproto/login/+page.server.ts`,
+			transforms.text(() => DEMO_REMOTE_LOGIN_SERVER)
+		);
+	} else {
+		sv.file(
+			`${directory.kitRoutes}/demo/atproto/+page.svelte`,
+			transforms.text(() => buildDemoFormIndexPage(ctx))
+		);
+		sv.file(
+			`${directory.kitRoutes}/demo/atproto/+page.server.ts`,
+			transforms.text(() => buildDemoFormIndexServer(ctx))
+		);
+		sv.file(
+			`${directory.kitRoutes}/demo/atproto/login/+page.svelte`,
+			transforms.text(() => DEMO_FORM_LOGIN_PAGE)
+		);
+		sv.file(
+			`${directory.kitRoutes}/demo/atproto/login/+page.server.ts`,
+			transforms.text(() => DEMO_FORM_LOGIN_SERVER)
+		);
+	}
+}
+
+/** @param {{ directory: any; sv: any; demo: string }} args */
+function runBrowserMode({ directory, sv, demo }) {
+	sv.file(
+		`${directory.lib}/atproto/index.ts`,
+		transforms.text(() => buildBrowserAtprotoConfig({ demo }))
+	);
+
+	// Prerendered metadata route — must be served at the path the lib's
+	// `metadata.client_id` references.
+	sv.file(
+		`${directory.kitRoutes}/oauth-client-metadata.json/+server.ts`,
+		transforms.text(() => BROWSER_METADATA_ROUTE)
+	);
+
+	// Patch root +layout.svelte to call atproto.init() on mount.
+	sv.file(
+		`${directory.kitRoutes}/+layout.svelte`,
+		transforms.text(({ content }) => patchBrowserLayout(content))
+	);
+
+	if (demo === 'none') return;
+
+	sv.file(
+		`${directory.kitRoutes}/demo/atproto/+page.svelte`,
+		transforms.text(() => buildBrowserDemoIndex({ demo }))
+	);
+	sv.file(
+		`${directory.kitRoutes}/demo/atproto/login/+page.svelte`,
+		transforms.text(() => BROWSER_DEMO_LOGIN_PAGE)
+	);
+}
+
 const HOOKS_SERVER = `import { atproto } from '$lib/atproto';
 
 export const handle = atproto.handle;
@@ -219,7 +292,11 @@ const STATUSPHERE_COLLECTION = 'xyz.statusphere.status';
 
 /** @param {{ storage: string; demo: string }} opts */
 function buildAtprotoConfig({ storage, demo }) {
-	const imports = ["import { createAtprotoAuth } from '@svelte-atproto/oauth/server';"];
+	const imports = [
+		"// Side-effect: loads `com.atproto.*` lexicon types into the atcute Client.",
+		"import '@atcute/atproto';",
+		"import { createAtprotoAuth } from '@svelte-atproto/oauth/server';"
+	];
 	if (storage === 'cloudflare') {
 		imports.push(
 			"import { cloudflareKV } from '@svelte-atproto/oauth/server/stores/cloudflare';"
@@ -884,4 +961,314 @@ function patchSvelteConfig(content) {
 		return content.replace(/kit\s*:\s*\{/, 'kit: {\n\t\texperimental: { remoteFunctions: true },');
 	}
 	return content; // unrecognized shape
+}
+
+
+// ---------------------------------------------------------------------------
+// Browser mode templates
+// ---------------------------------------------------------------------------
+
+/** @param {{ demo: string }} opts */
+function buildBrowserAtprotoConfig({ demo }) {
+	const scope =
+		demo === 'statusphere'
+			? `'atproto repo:${STATUSPHERE_COLLECTION}'`
+			: `'atproto'`;
+
+	const redirectLine =
+		demo === 'none'
+			? ''
+			: "\n\t// PDS redirects users back here after sign-in. Default is `/`.\n\tredirectPath: '/demo/atproto',";
+
+	return `// Side-effect: loads \`com.atproto.*\` lexicon types into the atcute Client.
+import '@atcute/atproto';
+import { createAtprotoBrowserAuth } from '@svelte-atproto/oauth/browser';
+import { dev } from '$app/environment';
+
+// To enable signup, uncomment the signupPDS line below.
+export const atproto = createAtprotoBrowserAuth({
+\t// TODO: replace with your deployed origin (e.g. https://your-app.example).
+\t// In dev, this is ignored — the lib uses a loopback client_id automatically.
+\torigin: 'https://your-app.example',
+\tscope: ${scope},${redirectLine}
+\t// signupPDS: dev ? 'https://pds.rip/' : 'https://selfhosted.social/'
+});
+`;
+}
+
+const BROWSER_METADATA_ROUTE = `import { atproto } from '$lib/atproto';
+import { json } from '@sveltejs/kit';
+
+export const prerender = true;
+
+export const GET = () => json(atproto.metadata);
+`;
+
+const BROWSER_LAYOUT_DEFAULT = `<script lang="ts">
+\timport { onMount } from 'svelte';
+\timport { atproto } from '$lib/atproto';
+
+\tlet { children } = $props();
+
+\tonMount(() => atproto.init());
+</script>
+
+{@render children()}
+`;
+
+/**
+ * Patch the user's root +layout.svelte to call atproto.init() on mount.
+ * Appends our imports + onMount call to whatever existing `<script>` block
+ * is there. If there's no script block yet, prepends one.
+ *
+ * @param {string} content
+ */
+function patchBrowserLayout(content) {
+	if (content.length === 0) return BROWSER_LAYOUT_DEFAULT;
+	if (/atproto\.init\(/.test(content)) return content; // already patched
+
+	const additions = [
+		"\timport { onMount } from 'svelte';",
+		"\timport { atproto } from '$lib/atproto';",
+		'',
+		'\tonMount(() => atproto.init());'
+	].join('\n');
+
+	const scriptRe = /(<script\b[^>]*>)([\s\S]*?)(<\/script>)/;
+	const m = content.match(scriptRe);
+	if (m) {
+		const [, openTag, body, closeTag] = m;
+		const trimmed = body.replace(/\s+$/, '');
+		const newScript = `${openTag}${trimmed}\n\n${additions}\n${closeTag}`;
+		return content.replace(scriptRe, newScript);
+	}
+
+	// No existing <script> — prepend one
+	return (
+		`<script lang="ts">\n${additions}\n</script>\n\n` +
+		content.replace(/^\s+/, '')
+	);
+}
+
+const BROWSER_DEMO_LOGIN_PAGE = `<script lang="ts">
+\timport { goto } from '$app/navigation';
+\timport { atproto } from '$lib/atproto';
+
+\tconst { user } = atproto;
+
+\tlet handle = $state('');
+\tlet error = $state<string | null>(null);
+\tlet pending = $state(false);
+
+\t$effect(() => {
+\t\tif ($user.isLoggedIn) goto('/demo/atproto');
+\t});
+
+\tasync function submit(event: SubmitEvent) {
+\t\tevent.preventDefault();
+\t\terror = null;
+\t\tpending = true;
+\t\ttry {
+\t\t\tawait atproto.login(handle.trim());
+\t\t} catch (e) {
+\t\t\terror = e instanceof Error ? e.message : 'Sign-in failed';
+\t\t\tpending = false;
+\t\t}
+\t}
+</script>
+
+<div style="max-width: 24rem; margin: 4rem auto; padding: 0 1rem; font-family: system-ui, sans-serif;">
+\t<h1>Sign in with atproto</h1>
+
+\t<form onsubmit={submit} style="display: flex; flex-direction: column; gap: 0.5rem;">
+\t\t<label>
+\t\t\t<span>Handle or DID</span>
+\t\t\t<input bind:value={handle} placeholder="alice.bsky.social" required />
+\t\t</label>
+
+\t\t{#if error}
+\t\t\t<p style="color: #c00;">{error}</p>
+\t\t{/if}
+
+\t\t<button type="submit" disabled={pending || $user.isInitializing}>
+\t\t\t{pending ? 'Signing in…' : 'Sign in'}
+\t\t</button>
+\t</form>
+</div>
+`;
+
+/** @param {{ demo: string }} opts */
+function buildBrowserDemoIndex({ demo }) {
+	if (demo === 'statusphere') {
+		return `<script lang="ts">
+\timport { goto } from '$app/navigation';
+\timport { atproto } from '$lib/atproto';
+\timport {
+\t\tcreateTID,
+\t\tlistRecords,
+\t\tloadHandles,
+\t\tparseUri,
+\t\trecentRecords,
+\t\ttype UfoRecord
+\t} from '@svelte-atproto/oauth/helper';
+\timport type { Did } from '@atcute/lexicons';
+
+\tconst { user } = atproto;
+\tconst COLLECTION = '${STATUSPHERE_COLLECTION}';
+\tconst emojis = ${JSON.stringify(STATUSPHERE_EMOJIS)};
+
+\tlet recent = $state<UfoRecord[]>([]);
+\tlet authors = $state<Record<string, string | undefined>>({});
+\tlet pending = $state<string | null>(null);
+
+\t$effect(() => {
+\t\tif (!$user.isInitializing && !$user.isLoggedIn) goto('/demo/atproto/login');
+\t});
+
+\t$effect(() => {
+\t\tif ($user.isLoggedIn) refresh();
+\t});
+
+\tasync function refresh() {
+\t\tconst client = $user.client;
+\t\tconst did = $user.did;
+\t\tconst [globalRecent, own] = await Promise.all([
+\t\t\trecentRecords(COLLECTION),
+\t\t\tclient && did
+\t\t\t\t? listRecords({ did, collection: COLLECTION, client, limit: 10 })
+\t\t\t\t: Promise.resolve([])
+\t\t]);
+
+\t\tconst ownAsItems = own.map((r) => {
+\t\t\tconst parts = parseUri(r.uri);
+\t\t\tconst record = r.value as { $type: string; createdAt?: string; [k: string]: unknown };
+\t\t\tconst parsed = typeof record.createdAt === 'string' ? new Date(record.createdAt).getTime() : NaN;
+\t\t\tconst time_us = (Number.isFinite(parsed) ? parsed : Date.now()) * 1000;
+\t\t\treturn {
+\t\t\t\tdid: parts?.repo ?? did!,
+\t\t\t\tcollection: parts?.collection ?? COLLECTION,
+\t\t\t\trkey: parts?.rkey ?? '',
+\t\t\t\trecord,
+\t\t\t\ttime_us
+\t\t\t} as UfoRecord;
+\t\t});
+
+\t\tconst seen = new Set<string>();
+\t\tconst merged: UfoRecord[] = [];
+\t\tfor (const item of [...ownAsItems, ...globalRecent]) {
+\t\t\tconst key = \`\${item.did}/\${item.rkey}\`;
+\t\t\tif (seen.has(key)) continue;
+\t\t\tseen.add(key);
+\t\t\tmerged.push(item);
+\t\t}
+\t\trecent = merged.sort((a, b) => b.time_us - a.time_us);
+
+\t\tconst authorDids = [...new Set([did as Did, ...recent.map((r) => r.did as Did)])];
+\t\tauthors = await loadHandles(authorDids);
+\t}
+
+\tasync function pick(emoji: string) {
+\t\tconst client = $user.client;
+\t\tconst did = $user.did;
+\t\tif (!client || !did) return;
+\t\tpending = emoji;
+\t\ttry {
+\t\t\tawait client.post('com.atproto.repo.putRecord', {
+\t\t\t\tinput: {
+\t\t\t\t\trepo: did,
+\t\t\t\t\tcollection: COLLECTION,
+\t\t\t\t\trkey: createTID(),
+\t\t\t\t\trecord: {
+\t\t\t\t\t\t$type: COLLECTION,
+\t\t\t\t\t\tstatus: emoji,
+\t\t\t\t\t\tcreatedAt: new Date().toISOString()
+\t\t\t\t\t}
+\t\t\t\t}
+\t\t\t});
+\t\t\tawait refresh();
+\t\t} finally {
+\t\t\tpending = null;
+\t\t}
+\t}
+
+\tasync function signOut() {
+\t\tawait atproto.logout();
+\t\tgoto('/demo/atproto/login');
+\t}
+</script>
+
+<div style="max-width: 32rem; margin: 4rem auto; padding: 0 1rem; font-family: system-ui, sans-serif;">
+\t<h1>What's your status?</h1>
+\t<p>Hi <strong>{$user.did ? (authors[$user.did] ?? $user.did) : ''}</strong>.</p>
+
+\t<div style="display: flex; gap: 0.5rem; margin: 1rem 0;">
+\t\t{#each emojis as emoji}
+\t\t\t<button onclick={() => pick(emoji)} disabled={pending !== null} style="font-size: 1.5rem;">
+\t\t\t\t{pending === emoji ? '…' : emoji}
+\t\t\t</button>
+\t\t{/each}
+\t</div>
+
+\t{#if recent.length}
+\t\t<h2 style="margin-top: 2rem;">Recent statuses (firehose)</h2>
+\t\t<ul style="list-style: none; padding: 0;">
+\t\t\t{#each recent as item}
+\t\t\t\t<li style="padding: 0.5rem 0;">
+\t\t\t\t\t<span style="font-size: 1.25rem;">{item.record.status}</span>
+\t\t\t\t\t<span style="color: #444; margin-left: 0.5rem;">@{authors[item.did] ?? item.did}</span>
+\t\t\t\t\t<small style="color: #888; margin-left: 0.5rem;">{item.record.createdAt}</small>
+\t\t\t\t</li>
+\t\t\t{/each}
+\t\t</ul>
+\t{/if}
+
+\t<button onclick={signOut} style="margin-top: 2rem;">Sign out</button>
+</div>
+`;
+	}
+
+	// login demo
+	return `<script lang="ts">
+\timport { goto } from '$app/navigation';
+\timport { atproto } from '$lib/atproto';
+\timport { loadHandle } from '@svelte-atproto/oauth/helper';
+
+\tconst { user } = atproto;
+
+\tlet handle = $state<string | undefined>(undefined);
+\tlet pending = $state(false);
+
+\t$effect(() => {
+\t\tif (!$user.isInitializing && !$user.isLoggedIn) goto('/demo/atproto/login');
+\t});
+
+\t$effect(() => {
+\t\tconst did = $user.did;
+\t\tif (!did) return;
+\t\tloadHandle(did).then((h) => {
+\t\t\tif ($user.did === did) handle = h;
+\t\t});
+\t});
+
+\tasync function signOut() {
+\t\tpending = true;
+\t\ttry {
+\t\t\tawait atproto.logout();
+\t\t\tgoto('/demo/atproto/login');
+\t\t} finally {
+\t\t\tpending = false;
+\t\t}
+\t}
+</script>
+
+<div style="max-width: 32rem; margin: 4rem auto; padding: 0 1rem; font-family: system-ui, sans-serif;">
+\t<h1>atproto demo</h1>
+
+\t<p>Signed in as <strong>{handle ?? $user.did}</strong>.</p>
+
+\t<button onclick={signOut} disabled={pending}>
+\t\t{pending ? 'Signing out…' : 'Sign out'}
+\t</button>
+</div>
+`;
 }
