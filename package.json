@@ -1,0 +1,59 @@
+{
+	"name": "@svelte-atproto/sv",
+	"description": "sv add-on that scaffolds @svelte-atproto/oauth into a SvelteKit project. Run `npx sv add @svelte-atproto`.",
+	"version": "0.0.1",
+	"type": "module",
+	"license": "MIT",
+	"author": "flo-bit",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/flo-bit/svelte-atproto-sv.git"
+	},
+	"homepage": "https://github.com/flo-bit/svelte-atproto-sv#readme",
+	"bugs": "https://github.com/flo-bit/svelte-atproto-sv/issues",
+	"scripts": {
+		"build": "tsdown",
+		"prepublishOnly": "npm run build",
+		"test": "vitest run",
+		"changeset": "changeset",
+		"version-packages": "changeset version",
+		"release": "pnpm build && changeset publish",
+		"demo:reset": "rm -rf demo && sv create demo --types ts --template minimal --no-add-ons --no-install",
+		"demo:add": "pnpm build && sv add file:../ --cwd demo --no-git-check --no-install",
+		"demo:add:statusphere-form": "pnpm build && sv add 'file:../=storage:cloudflare+demo:statusphere+demoStyle:form' --cwd demo --no-git-check --no-download-check --no-install",
+		"demo:add:statusphere-remote": "pnpm build && sv add 'file:../=storage:cloudflare+demo:statusphere+demoStyle:remote' --cwd demo --no-git-check --no-download-check --no-install",
+		"demo:add:login-form": "pnpm build && sv add 'file:../=storage:memory+demo:login+demoStyle:form' --cwd demo --no-git-check --no-download-check --no-install",
+		"demo:add:login-remote": "pnpm build && sv add 'file:../=storage:memory+demo:login+demoStyle:remote' --cwd demo --no-git-check --no-download-check --no-install",
+		"demo:add:bare": "pnpm build && sv add 'file:../=storage:memory+demo:none' --cwd demo --no-git-check --no-download-check --no-install",
+		"demo:link-lib": "node scripts/link-lib.js",
+		"demo:run": "cd demo && pnpm install && pnpm atproto:setup && pnpm dev"
+	},
+	"files": [
+		"dist"
+	],
+	"exports": {
+		".": {
+			"default": "./dist/index.mjs"
+		}
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"peerDependencies": {
+		"sv": "^0.15.0"
+	},
+	"devDependencies": {
+		"@changesets/cli": "^2.27.0",
+		"@playwright/test": "^1.59.1",
+		"@sveltejs/sv-utils": "^0.2.0",
+		"@types/node": "^25.5.2",
+		"sv": "^0.15.0",
+		"tsdown": "^0.21.7",
+		"vitest": "^4.1.3"
+	},
+	"keywords": [
+		"sv-add",
+		"svelte",
+		"sveltekit"
+	]
+}
