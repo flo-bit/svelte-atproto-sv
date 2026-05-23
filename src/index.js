@@ -3,7 +3,7 @@ import { transforms } from './sv-utils.js';
 
 // Pin to the latest published lib at scaffold-time. Users can bump in their
 // own package.json afterward — the addon doesn't enforce it.
-const LIB_VERSION = '^0.1.0';
+const LIB_VERSION = '^0.3.0';
 
 const options = defineAddonOptions()
 	.add('mode', {
@@ -84,7 +84,7 @@ export default defineAddon({
 		// `@atcute/atproto` augments the atcute Client with lexicon types for
 		// `com.atproto.*` calls (e.g. `client.post('com.atproto.repo.putRecord', …)`
 		// type-checks). Required as a direct dep for TS to load the augmentation.
-		sv.dependency('@atcute/atproto', '^3.1.10');
+		sv.dependency('@atcute/atproto', '^4.0.0');
 
 		// vite.config — force 127.0.0.1 for OAuth loopback (RFC 8252 §7.3 requires
 		// the literal IPv4 loopback, not "localhost" — which resolves to ::1 on
