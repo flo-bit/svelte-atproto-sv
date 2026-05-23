@@ -1,7 +1,7 @@
 {
 	"name": "@svelte-atproto/sv",
 	"description": "sv add-on that scaffolds @svelte-atproto/oauth into a SvelteKit project. Run `npx sv add @svelte-atproto`.",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"type": "module",
 	"license": "MIT",
 	"author": "flo-bit",
