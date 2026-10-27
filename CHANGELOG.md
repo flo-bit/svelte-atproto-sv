@@ -1,5 +1,19 @@
 # @svelte-atproto/sv
 
+## 0.2.0
+
+### Minor Changes
+
+- 96d1716: Support sv 1.1.1 and sv-utils 1.0.2, replacing the previous sv 0.15 peer range. Update scaffolded atcute dependencies, Playwright, build tooling, and transitive dependencies. Declare lexicons directly for browser demos, import server auth types through the OAuth entry point, and use the known repository DID rather than assuming parsed AT URI authorities are always DIDs. Keep Vitest 4 and Changesets 2; integration tests now exercise the built addon and use context-bound Vitest assertions in concurrent tests.
+
+  Support SvelteKit 3 alongside Kit 2: generate explicit `#lib` subpath imports, declare private environment variables in `src/env.*`, and use Kit 3's named environment imports. Enable remote functions in both legacy `svelte.config.*` files and inline `sveltekit({...})` Vite configuration, preserving existing options. Test 9 option combinations across both Kit majors and JS/TS with type checks, production builds, and HTTP preview smoke tests, plus config regression tests.
+
+  Use pnpm as the canonical dependency manager and remove the stale npm lockfile. Publish the accompanying OAuth 0.4.1 update before this addon release.
+
+### Patch Changes
+
+- 96d1716: Require OAuth 0.4.1, including state-bound return paths, corrected cookie delivery from intercepted hook responses, and Kit 3 compatibility. Both generated login pages now validate return paths with OAuth's `safeReturnTo` instead of an inline copy, rejecting backslash/open-redirect tricks, encoded control characters, and malformed escapes while preserving valid path/query encoding. Publish OAuth 0.4.1 before this addon release.
+
 ## 0.1.1
 
 ### Patch Changes
