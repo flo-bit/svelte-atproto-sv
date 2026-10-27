@@ -4,17 +4,19 @@ Cheatsheet: [All official add-ons source code](https://github.com/sveltejs/cli/t
 
 ---
 
+Use Node 24 LTS and pnpm. `pnpm-lock.yaml` is the canonical lockfile; do not generate a separate npm lockfile.
+
 Some convenient scripts are provided to help develop the add-on.
 
 ```sh
 ## create a new minimal project in the `demo` directory
-npm run demo-create
+pnpm demo:reset
 
 ## add your current add-on to the demo project
-npm run demo-add
+pnpm demo:add
 
 ## run the tests
-npm run test
+pnpm test
 ```
 
 ## Key things to note
@@ -26,22 +28,17 @@ Your `add-on` should:
 
 ## Building
 
-Your add-on is bundled with [tsdown](https://tsdown.dev/) into a single file in `dist/`. This bundles everything except `sv` (which is a peer dependency provided at runtime).
+Your add-on is bundled with [tsdown](https://tsdown.dev/) into `dist/`, including any shared chunks. This bundles everything except `sv` (which is a peer dependency provided at runtime). Tests build and exercise the published entry point.
 
 ```sh
-npm run build
+pnpm build
 ```
 
 ## Publishing
 
-When you're ready to publish your add-on to npm:
+Add a changeset with `pnpm changeset`. The release workflow uses pnpm to build, test, version, and publish through npm trusted publishing.
 
-```sh
-npm login
-npm publish
-```
-
-> `prepublishOnly` will automatically run the build before publishing.
+Publish OAuth 0.4.1 (Kit 3 peer range, hook types, and cookie-jar compatibility) before this addon release. The addon scaffolds `^0.4.1`, and CI deliberately tests against npm rather than a sibling checkout.
 
 ## Things to be aware of
 

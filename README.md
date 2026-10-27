@@ -11,6 +11,8 @@ npx sv add @svelte-atproto
 > [!IMPORTANT]
 > Svelte maintainers have not reviewed community add-ons for malicious code. Use at your discretion.
 
+Supports SvelteKit 2 and 3 with Svelte 5. On Kit 3, generated imports use `#lib` with explicit filenames, and server-mode environment variables are declared in `src/env.ts` or `src/env.js`. Kit 2 keeps its `$lib` and legacy environment imports.
+
 ## What you get
 
 After `pnpm install` + `pnpm atproto:setup`, you have:
@@ -29,6 +31,10 @@ src/
 ```
 
 Plus three npm scripts (`atproto:setup`, `atproto:keygen`, `atproto:secret`) that wrap the lib's CLI for `.env` generation.
+
+## Upgrading existing apps
+
+Generated apps use OAuth 0.4.1+ and validate local return paths with its `safeReturnTo` (`@svelte-atproto/oauth/permissions`), so future validator fixes arrive through OAuth updates. Updating the addon does not rewrite previously generated files: update their OAuth dependency and replace the old inline login-page validator with that import too. After upgrading OAuth, remove hooks that manually append `oauth_return_to`.
 
 ## Prompts
 
@@ -54,7 +60,7 @@ Plus three npm scripts (`atproto:setup`, `atproto:keygen`, `atproto:secret`) tha
 | Value | Notes |
 |---|---|
 | `form` | SvelteKit form actions (stable, recommended) |
-| `remote` | experimental SvelteKit remote functions; adds `kit.experimental.remoteFunctions: true` to `svelte.config.js` and a `valibot` dep |
+| `remote` | experimental SvelteKit remote functions; enables `experimental.remoteFunctions` in the SvelteKit config (`svelte.config.*` or `sveltekit({...})` in `vite.config.*`) and adds `valibot` |
 
 ## Pass options non-interactively
 
@@ -93,6 +99,8 @@ The addon adds `server: { host: '127.0.0.1' }` to `vite.config.ts/.js`. OAuth lo
 
 ## Local development of this add-on
 
+Use Node 24 LTS, pnpm, and `sv` 1.1.1+. `pnpm-lock.yaml` is the canonical lockfile; tests build and exercise the packaged entry point.
+
 ```sh
 pnpm demo:reset                          # rm -rf demo && fresh sv create
 pnpm demo:add:statusphere-form           # cloudflare + statusphere + form actions
@@ -108,8 +116,10 @@ pnpm demo:run                            # cd demo && pnpm install && pnpm atpro
 `demo:link-lib` defaults to a sibling clone at `../../svelte-atproto-oauth`. Override with `ATPROTO_OAUTH_LIB_PATH=/abs/path pnpm demo:link-lib` if your checkouts live elsewhere.
 
 ```sh
-pnpm test                # vitest — covers 3 option combos × kit-ts & kit-js
+pnpm test                # 9 option combos × Kit 2/3 × JS/TS, plus config regressions
 ```
+
+Each generated app runs `atproto:setup` (server mode), type checks, a production build, and HTTP preview smoke tests for metadata, JWKS, logout cookie delivery, and demo pages where applicable. The tests use local fixtures and generated test secrets; they do not contact a real PDS or Redis instance.
 
 The test suite injects `pnpm.overrides` to point at a local lib checkout when one exists (sibling dir or `ATPROTO_OAUTH_LIB_PATH`); otherwise it resolves `@svelte-atproto/oauth` from npm — which is what CI does, so CI exercises the real published version end-to-end.
 

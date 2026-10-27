@@ -1,8 +1,9 @@
-import { expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import addon from '../src/index.js';
+import addon from '../dist/index.mjs';
+import { js, svelteConfig } from '../dist/sv-utils.mjs';
+import { prepareKit2, verifyApp } from './setup/compatibility.js';
 import { setupTest } from './setup/suite.js';
 
 const browser = false;
@@ -28,7 +29,8 @@ let workspacePatched = false;
 const { test, testCases } = setupTest(
 	{ addon },
 	{
-		preAdd: ({ cwd: testCaseCwd }) => {
+		preAdd: ({ cwd: testCaseCwd, addonTestCase }) => {
+			if (addonTestCase.kind.kitMajor === 2) prepareKit2(testCaseCwd);
 			// If a local lib checkout is available, override the scaffolded
 			// dep at the workspace root to point at it. Otherwise, let pnpm
 			// resolve `@svelte-atproto/oauth` from the npm registry.
@@ -64,6 +66,14 @@ const { test, testCases } = setupTest(
 				}
 			},
 			{
+				type: 'server-memory-statusphere-remote',
+				options: {
+					[addon.id]: {
+						mode: 'server', storage: 'memory', demo: 'statusphere', demoStyle: 'remote'
+					}
+				}
+			},
+			{
 				type: 'server-upstash-no-demo',
 				options: {
 					[addon.id]: { mode: 'server', storage: 'upstash', demo: 'none' }
@@ -76,12 +86,34 @@ const { test, testCases } = setupTest(
 				}
 			},
 			{
+				type: 'server-memory-login-form',
+				options: {
+					[addon.id]: { mode: 'server', storage: 'memory', demo: 'login', demoStyle: 'form' }
+				}
+			},
+			{
+				type: 'server-none-no-demo',
+				options: {
+					[addon.id]: { mode: 'server', storage: 'none', demo: 'none' }
+				}
+			},
+			{
+				type: 'browser-login',
+				options: {
+					[addon.id]: { mode: 'browser', demo: 'login' }
+				}
+			},
+			{
 				type: 'browser-no-demo',
 				options: {
 					[addon.id]: { mode: 'browser', demo: 'none' }
 				}
 			}
-		],
+		].flatMap((kind) => [2, 3].map((kitMajor) => ({
+			...kind,
+			type: `kit${kitMajor}-${kind.type}`,
+			kitMajor
+		}))),
 		filter: (testCase) => testCase.variant.includes('kit'),
 		browser
 	}
@@ -89,9 +121,15 @@ const { test, testCases } = setupTest(
 
 test.concurrent.for(testCases)(
 	'@svelte-atproto/sv $kind.type $variant',
-	(testCase, { ...ctx }) => {
+	// Concurrent tests must use the context-bound expect so assertions are attributed correctly.
+	async (testCase, { expect, ...ctx }) => {
 		const cwd = ctx.cwd(testCase);
 		const opts = testCase.kind.options[addon.id];
+		const kitMajor = testCase.kind.kitMajor;
+		const remoteImport = kitMajor === 3 ? '#lib/atproto/oauth.remote.js' : '$lib/atproto/oauth.remote';
+		// Assertions alone missed broken Kit 3 imports. Check and build every
+		// scaffold (including JS variants, forms, remote functions and browser mode).
+		await verifyApp(cwd, opts);
 
 		const atproto = read(cwd, 'src/lib/atproto/index.ts');
 		const pkg = JSON.parse(read(cwd, 'package.json'));
@@ -103,7 +141,10 @@ test.concurrent.for(testCases)(
 		const vite = fs.readFileSync(vitePath, 'utf8');
 		expect(vite).toContain("host: '127.0.0.1'");
 
-		expect(pkg.dependencies?.['@svelte-atproto/oauth']).toBeDefined();
+		expect(pkg.dependencies?.['@svelte-atproto/oauth']).toBe('^0.4.1');
+		expect(pkg.devDependencies['@sveltejs/kit']).toMatch(new RegExp(`^\\^${kitMajor}\\.`));
+		expect(pkg.dependencies?.['@atcute/atproto']).toBe('^4.0.4');
+		expect(pkg.dependencies?.['@atcute/lexicons']).toBe('^2.1.1');
 
 		// =================================================================
 		// Browser mode
@@ -161,7 +202,17 @@ test.concurrent.for(testCases)(
 		// Server mode
 		// =================================================================
 		expect(atproto).toContain('createAtprotoAuth');
-		expect(atproto).toContain('env.ORIGIN');
+		expect(atproto).toContain(kitMajor === 3 ? "from '$app/env/private'" : "from '$env/dynamic/private'");
+		if (kitMajor === 3) {
+			expect(atproto).not.toContain('env.ORIGIN');
+			const envFile = read(cwd, `src/env.${testCase.variant === 'kit-ts' ? 'ts' : 'js'}`);
+			for (const name of ['ORIGIN', 'COOKIE_SECRET', 'CLIENT_ASSERTION_KEY',
+				...(opts.storage === 'upstash' ? ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'] : [])]) {
+				expect(envFile).toContain(`${name}:`);
+			}
+		} else {
+			expect(atproto).toContain('env.ORIGIN');
+		}
 		expect(atproto).not.toContain('OAUTH_PUBLIC_URL');
 		// no real signupPDS field (the file does have an "// add signupPDS: …" hint comment)
 		expect(atproto).not.toMatch(/^\s*signupPDS:/m);
@@ -190,6 +241,8 @@ test.concurrent.for(testCases)(
 
 		const appDts = read(cwd, 'src/app.d.ts');
 		expect(appDts).toContain('Locals');
+		expect(appDts).toContain("from '@svelte-atproto/oauth/server'");
+		expect(appDts).not.toContain("from '@atcute/oauth-node-client'");
 		// No PageData augmentation — auth lives on event.locals, not page.data.
 		expect(appDts).not.toContain('AtprotoPageData');
 		expect(appDts).not.toContain('BskyProfile');
@@ -217,6 +270,18 @@ test.concurrent.for(testCases)(
 		expect(indexServer).toContain('/demo/atproto/login');
 		// Per-page load reads locals.did + returns it to data
 		expect(indexServer).toContain('locals.did');
+		if (opts.demo === 'statusphere') {
+			expect(indexServer).toContain('const ownDid = locals.did');
+			expect(indexServer).toContain('did: ownDid');
+			expect(indexServer).not.toContain('did: parts?.repo');
+		}
+
+		const loginServer = read(cwd, 'src/routes/demo/atproto/login/+page.server.ts');
+		expect(loginServer).toContain(
+			"import { safeReturnTo as safeLocalPath } from '@svelte-atproto/oauth/permissions';"
+		);
+		expect(loginServer).toContain('return safeLocalPath(value) ?? DEFAULT_RETURN_TO;');
+		expect(loginServer).not.toContain('decodeURIComponent');
 
 		// Always uses loadHandle (lightweight). loadBskyProfile is shown commented out.
 		expect(indexServer).toContain('loadHandle');
@@ -251,16 +316,22 @@ test.concurrent.for(testCases)(
 			expect(remote).toContain('atproto.api.startLogin');
 			expect(remote).toContain('atproto.api.logout');
 
-			expect(indexPage).toContain("from '$lib/atproto/oauth.remote'");
+			expect(indexPage).toContain(`from '${remoteImport}'`);
 			expect(indexPage).toContain('oauthLogout');
 
 			const loginPage = read(cwd, 'src/routes/demo/atproto/login/+page.svelte');
-			expect(loginPage).toContain("from '$lib/atproto/oauth.remote'");
+			expect(loginPage).toContain(`from '${remoteImport}'`);
 			expect(loginPage).toContain('oauthLogin');
 
-			// svelte.config patched
-			const svConfig = read(cwd, 'svelte.config.js');
-			expect(svConfig).toMatch(/remoteFunctions\s*:\s*true/);
+			// The flag belongs under kit in svelte.config.*, or directly in
+			// sveltekit({...}) in newer Vite-based templates.
+			const config = svelteConfig.read(cwd);
+			expect(config).not.toBeNull();
+			const experimental = js.object.findProperty(config.kit, { name: 'experimental' });
+			const remoteFunctions = js.object.findProperty(experimental.value, {
+				name: 'remoteFunctions'
+			});
+			expect(remoteFunctions.value).toMatchObject({ type: 'Literal', value: true });
 
 			if (opts.demo === 'statusphere') {
 				expect(remote).toContain('setStatus');

@@ -1,9 +1,12 @@
 import { defineAddon, defineAddonOptions } from 'sv';
-import { transforms } from './sv-utils.js';
+import { defineEnv, js, parse, resolveLibPrefix, svelteConfig, transforms } from './sv-utils.js';
+import { demoSafeReturnTo, demoSafeReturnToImport } from './return-to.js';
 
-// Pin to the latest published lib at scaffold-time. Users can bump in their
-// own package.json afterward — the addon doesn't enforce it.
-const LIB_VERSION = '^0.3.0';
+// OAuth 0.4.1 adds the Kit 3 peer range, hook types and cookie-jar compatibility.
+// Publish that library release before publishing this addon.
+const LIB_VERSION = '^0.4.1';
+
+/** @typedef {(build: (content: string) => string) => ReturnType<typeof transforms.text>} Template */
 
 const options = defineAddonOptions()
 	.add('mode', {
@@ -61,7 +64,7 @@ const options = defineAddonOptions()
 			{ value: 'form', label: 'Form actions (stable, recommended)' },
 			{
 				value: 'remote',
-				label: 'Remote functions (experimental — adds kit.experimental.remoteFunctions)'
+				label: 'Remote functions (experimental)'
 			}
 		],
 		condition: (o) => o.mode === 'server' && o.demo !== 'none'
@@ -76,15 +79,28 @@ export default defineAddon({
 		if (!isKit) unsupported('Requires SvelteKit');
 	},
 
-	run: ({ directory, sv, options }) => {
+	run: ({ cwd, directory, dependencyVersion, sv, options }) => {
 		const { mode, storage, demo, demoStyle } = options;
+		const libPrefix = resolveLibPrefix(dependencyVersion('@sveltejs/kit'));
+		const authImport = `${libPrefix}/atproto${libPrefix === '#lib' ? '/index.js' : ''}`;
+		const remoteImport = `${libPrefix}/atproto/oauth.remote${libPrefix === '#lib' ? '.js' : ''}`;
+		const env = defineEnv({ sv, cwd, dependencyVersion });
+		// Only generated templates use these placeholders; keep Kit 2's imports
+		// while using subpath imports and the declared env API on Kit 3.
+		/** @param {(content: string) => string} build */
+		const template = (build) => transforms.text(({ content }) => build(content)
+			.replaceAll('$lib/atproto/oauth.remote', remoteImport)
+			.replaceAll('$lib/atproto', authImport)
+			.replaceAll('$app/environment', env.mode === 'declared' ? '$app/env' : '$app/environment'));
 
 		// Library dependency
 		sv.dependency('@svelte-atproto/oauth', LIB_VERSION);
 		// `@atcute/atproto` augments the atcute Client with lexicon types for
 		// `com.atproto.*` calls (e.g. `client.post('com.atproto.repo.putRecord', …)`
 		// type-checks). Required as a direct dep for TS to load the augmentation.
-		sv.dependency('@atcute/atproto', '^4.0.0');
+		sv.dependency('@atcute/atproto', '^4.0.4');
+		// Generated browser demos import Did directly; pnpm does not expose transitives.
+		sv.dependency('@atcute/lexicons', '^2.1.1');
 
 		// vite.config — force 127.0.0.1 for OAuth loopback (RFC 8252 §7.3 requires
 		// the literal IPv4 loopback, not "localhost" — which resolves to ::1 on
@@ -93,13 +109,15 @@ export default defineAddon({
 		sv.file('vite.config.js', transforms.text(({ content }) => patchViteConfig(content)));
 
 		if (mode === 'browser') {
-			runBrowserMode({ directory, sv, demo });
+			runBrowserMode({ directory, sv, demo, template });
 		} else {
-			runServerMode({ directory, sv, storage, demo, demoStyle });
+			runServerMode({ cwd, directory, sv, storage, demo, demoStyle, env, template });
 		}
 	},
 
-	nextSteps: ({ options }) => {
+	nextSteps: ({ options, dependencyVersion }) => {
+		const libPrefix = resolveLibPrefix(dependencyVersion('@sveltejs/kit'));
+		const authImport = `${libPrefix}/atproto${libPrefix === '#lib' ? '/index.js' : ''}`;
 		if (options.mode === 'browser') {
 			const lines = [
 				'atproto OAuth (browser-only) scaffolded.',
@@ -121,7 +139,7 @@ export default defineAddon({
 			}
 			lines.push(
 				'',
-				'Auth state is reactive in any component: `import { atproto } from "$lib/atproto"; const { user } = atproto;` then read `$user.did` / `$user.isLoggedIn`.'
+				`Auth state is reactive in any component: \`import { atproto } from "${authImport}"; const { user } = atproto;\` then read \`$user.did\` / \`$user.isLoggedIn\`.`
 			);
 			return lines;
 		}
@@ -152,7 +170,7 @@ export default defineAddon({
 			lines.push('', `${label} demo (${options.demoStyle}) scaffolded at /demo/atproto.`);
 			if (options.demoStyle === 'remote') {
 				lines.push(
-					'Note: SvelteKit remote functions are experimental — the flag has been added to svelte.config.js.'
+					'Note: SvelteKit remote functions are experimental — enabled in your SvelteKit configuration.'
 				);
 			}
 			if (options.demo === 'statusphere') {
@@ -174,18 +192,22 @@ export default defineAddon({
 // Mode dispatchers
 // ---------------------------------------------------------------------------
 
-/** @param {{ directory: any; sv: any; storage: string; demo: string; demoStyle?: string }} args */
-function runServerMode({ directory, sv, storage, demo, demoStyle }) {
+/** @param {{ cwd: string; directory: any; sv: any; storage: string; demo: string; demoStyle?: string; env: ReturnType<typeof defineEnv>; template: Template }} args */
+function runServerMode({ cwd, directory, sv, storage, demo, demoStyle, env, template }) {
 	const useRemote = demo !== 'none' && demoStyle === 'remote';
 	if (useRemote) sv.dependency('valibot', '^1.0.0');
+	for (const name of ['ORIGIN', 'COOKIE_SECRET', 'CLIENT_ASSERTION_KEY',
+		...(storage === 'upstash' ? ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'] : [])]) {
+		env.define({ name });
+	}
 
 	sv.file(
 		`${directory.lib}/atproto/index.ts`,
-		transforms.text(() => buildAtprotoConfig({ storage, demo }))
+		template(() => buildAtprotoConfig({ storage, demo, env }))
 	);
 
-	sv.file(`${directory.src}/hooks.server.ts`, transforms.text(() => HOOKS_SERVER));
-	sv.file(`${directory.src}/app.d.ts`, transforms.text(() => APP_DTS));
+	sv.file(`${directory.src}/hooks.server.ts`, template(() => HOOKS_SERVER));
+	sv.file(`${directory.src}/app.d.ts`, template(() => APP_DTS));
 
 	sv.file(
 		'.env.example',
@@ -208,78 +230,81 @@ function runServerMode({ directory, sv, storage, demo, demoStyle }) {
 	const ctx = { demo };
 
 	if (demoStyle === 'remote') {
-		sv.file('svelte.config.js', transforms.text(({ content }) => patchSvelteConfig(content)));
-		sv.file('svelte.config.ts', transforms.text(({ content }) => patchSvelteConfig(content)));
+		// sv-utils locates either legacy svelte.config.* or inline sveltekit({...})
+		// configuration and merges the flag without replacing other options.
+		svelteConfig.edit({ sv, cwd }, ({ override }) => {
+			override({ experimental: { remoteFunctions: true } });
+		});
 
 		sv.file(
 			`${directory.lib}/atproto/oauth.remote.ts`,
-			transforms.text(() => buildRemoteCommands({ demo }))
+			template(() => buildRemoteCommands({ demo }))
 		);
 		sv.file(
 			`${directory.kitRoutes}/demo/atproto/+page.svelte`,
-			transforms.text(() => buildDemoRemoteIndexPage(ctx))
+			template(() => buildDemoRemoteIndexPage(ctx))
 		);
 		sv.file(
 			`${directory.kitRoutes}/demo/atproto/+page.server.ts`,
-			transforms.text(() => buildDemoRemoteIndexServer(ctx))
+			template(() => buildDemoRemoteIndexServer(ctx))
 		);
 		sv.file(
 			`${directory.kitRoutes}/demo/atproto/login/+page.svelte`,
-			transforms.text(() => DEMO_REMOTE_LOGIN_PAGE)
+			template(() => DEMO_REMOTE_LOGIN_PAGE)
 		);
 		sv.file(
 			`${directory.kitRoutes}/demo/atproto/login/+page.server.ts`,
-			transforms.text(() => DEMO_REMOTE_LOGIN_SERVER)
+			template(() => DEMO_REMOTE_LOGIN_SERVER)
 		);
 	} else {
 		sv.file(
 			`${directory.kitRoutes}/demo/atproto/+page.svelte`,
-			transforms.text(() => buildDemoFormIndexPage(ctx))
+			template(() => buildDemoFormIndexPage(ctx))
 		);
 		sv.file(
 			`${directory.kitRoutes}/demo/atproto/+page.server.ts`,
-			transforms.text(() => buildDemoFormIndexServer(ctx))
+			template(() => buildDemoFormIndexServer(ctx))
 		);
 		sv.file(
 			`${directory.kitRoutes}/demo/atproto/login/+page.svelte`,
-			transforms.text(() => DEMO_FORM_LOGIN_PAGE)
+			template(() => DEMO_FORM_LOGIN_PAGE)
 		);
 		sv.file(
 			`${directory.kitRoutes}/demo/atproto/login/+page.server.ts`,
-			transforms.text(() => DEMO_FORM_LOGIN_SERVER)
+			template(() => DEMO_FORM_LOGIN_SERVER)
 		);
 	}
 }
 
-/** @param {{ directory: any; sv: any; demo: string }} args */
-function runBrowserMode({ directory, sv, demo }) {
+/** @param {{ directory: any; sv: any; demo: string; template: Template }} args */
+function runBrowserMode({ directory, sv, demo, template }) {
 	sv.file(
 		`${directory.lib}/atproto/index.ts`,
-		transforms.text(() => buildBrowserAtprotoConfig({ demo }))
+		template(() => buildBrowserAtprotoConfig({ demo }))
 	);
 
 	// Prerendered metadata route — must be served at the path the lib's
 	// `metadata.client_id` references.
 	sv.file(
 		`${directory.kitRoutes}/oauth-client-metadata.json/+server.ts`,
-		transforms.text(() => BROWSER_METADATA_ROUTE)
+		template(() => BROWSER_METADATA_ROUTE)
 	);
 
 	// Patch root +layout.svelte to call atproto.init() on mount.
 	sv.file(
 		`${directory.kitRoutes}/+layout.svelte`,
-		transforms.text(({ content }) => patchBrowserLayout(content))
+		template((content) => patchBrowserLayout(content))
 	);
 
 	if (demo === 'none') return;
 
 	sv.file(
 		`${directory.kitRoutes}/demo/atproto/+page.svelte`,
-		transforms.text(() => buildBrowserDemoIndex({ demo }))
+		template(() => buildBrowserDemoIndex({ demo }))
 	);
 	sv.file(
 		`${directory.kitRoutes}/demo/atproto/login/+page.svelte`,
-		transforms.text(() => BROWSER_DEMO_LOGIN_PAGE)
+		template(() => BROWSER_DEMO_LOGIN_PAGE)
 	);
 }
 
@@ -290,8 +315,11 @@ export const handle = atproto.handle;
 
 const STATUSPHERE_COLLECTION = 'xyz.statusphere.status';
 
-/** @param {{ storage: string; demo: string }} opts */
-function buildAtprotoConfig({ storage, demo }) {
+/** @param {{ storage: string; demo: string; env: ReturnType<typeof defineEnv> }} opts */
+function buildAtprotoConfig({ storage, demo, env }) {
+	const { ast, generateCode } = parse.script('');
+	/** @param {string} name */
+	const envRef = (name) => env.reference(ast, js, { name });
 	const imports = [
 		"// Side-effect: loads `com.atproto.*` lexicon types into the atcute Client.",
 		"import '@atcute/atproto';",
@@ -305,15 +333,14 @@ function buildAtprotoConfig({ storage, demo }) {
 	if (storage === 'upstash') {
 		imports.push("import { upstashRedis } from '@svelte-atproto/oauth/server/stores/upstash';");
 	}
-	imports.push("import { env } from '$env/dynamic/private';");
 
 	const scope =
 		demo === 'statusphere' ? `'atproto repo:${STATUSPHERE_COLLECTION}'` : "'atproto'";
 
 	const fields = [
-		'origin: env.ORIGIN',
-		'cookieSecret: env.COOKIE_SECRET',
-		'clientAssertionKey: env.CLIENT_ASSERTION_KEY',
+		`origin: ${envRef('ORIGIN')}`,
+		`cookieSecret: ${envRef('COOKIE_SECRET')}`,
+		`clientAssertionKey: ${envRef('CLIENT_ASSERTION_KEY')}`,
 		`scope: ${scope}`
 	];
 	if (storage === 'cloudflare') {
@@ -321,14 +348,14 @@ function buildAtprotoConfig({ storage, demo }) {
 		fields.push("states: cloudflareKV('OAUTH_STATES', { ttl: 600 })");
 	} else if (storage === 'upstash') {
 		fields.push(
-			'sessions: upstashRedis({ url: env.UPSTASH_REDIS_REST_URL!, token: env.UPSTASH_REDIS_REST_TOKEN! })'
+			`sessions: upstashRedis({ url: ${envRef('UPSTASH_REDIS_REST_URL')}!, token: ${envRef('UPSTASH_REDIS_REST_TOKEN')}! })`
 		);
 		fields.push(
-			'states: upstashRedis({ url: env.UPSTASH_REDIS_REST_URL!, token: env.UPSTASH_REDIS_REST_TOKEN!, ttl: 600 })'
+			`states: upstashRedis({ url: ${envRef('UPSTASH_REDIS_REST_URL')}!, token: ${envRef('UPSTASH_REDIS_REST_TOKEN')}!, ttl: 600 })`
 		);
 	}
 
-	return `${imports.join('\n')}
+	return `${generateCode()}\n${imports.join('\n')}
 
 // To enable signup, add: signupPDS: 'https://your-pds.example/'
 export const atproto = createAtprotoAuth({
@@ -338,9 +365,7 @@ ${fields.map((f) => `\t${f}`).join(',\n')}
 }
 
 const APP_DTS = `// See https://svelte.dev/docs/kit/types#app.d.ts
-import type { OAuthSession } from '@atcute/oauth-node-client';
-import type { Client } from '@atcute/client';
-import type { Did } from '@atcute/lexicons';
+import type { OAuthSession, Client, Did } from '@svelte-atproto/oauth/server';
 
 declare global {
 \tnamespace App {
@@ -407,10 +432,11 @@ function statusphereLoadLines() {
 		'// Recent statuses globally, from the firehose via UFO. UFO is slightly',
 		"// behind the firehose, so we also pull the user's own records and merge",
 		'// them in front so just-published statuses show up immediately.',
+		'const ownDid = locals.did;',
 		'const [globalRecent, own] = await Promise.all([',
 		'\trecentRecords(COLLECTION),',
 		'\tlocals.client',
-		'\t\t? listRecords({ did: locals.did, collection: COLLECTION, client: locals.client, limit: 10 })',
+		'\t\t? listRecords({ did: ownDid, collection: COLLECTION, client: locals.client, limit: 10 })',
 		'\t\t: Promise.resolve([])',
 		']);',
 		'',
@@ -420,7 +446,7 @@ function statusphereLoadLines() {
 		"\tconst parsed = typeof record.createdAt === 'string' ? new Date(record.createdAt).getTime() : NaN;",
 		'\tconst time_us = (Number.isFinite(parsed) ? parsed : Date.now()) * 1000;',
 		'\treturn {',
-		'\t\tdid: parts?.repo ?? locals.did,',
+		'\t\tdid: ownDid,',
 		'\t\tcollection: parts?.collection ?? COLLECTION,',
 		"\t\trkey: parts?.rkey ?? '',",
 		'\t\trecord,',
@@ -637,17 +663,11 @@ const DEMO_FORM_LOGIN_PAGE = `<script lang="ts">
 const DEMO_FORM_LOGIN_SERVER = `import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { atproto } from '$lib/atproto';
+${demoSafeReturnToImport}
 
 const DEFAULT_RETURN_TO = '/demo/atproto';
 
-function safeReturnTo(value: string | null | undefined): string {
-\tif (!value) return DEFAULT_RETURN_TO;
-\ttry {
-\t\tconst decoded = decodeURIComponent(value);
-\t\tif (decoded.startsWith('/') && !decoded.startsWith('//')) return decoded;
-\t} catch {}
-\treturn DEFAULT_RETURN_TO;
-}
+${demoSafeReturnTo}
 
 export const load: PageServerLoad = ({ locals, url }) => {
 \tif (locals.did) redirect(302, safeReturnTo(url.searchParams.get('returnTo')));
@@ -920,17 +940,11 @@ const DEMO_REMOTE_LOGIN_PAGE = `<script lang="ts">
 
 const DEMO_REMOTE_LOGIN_SERVER = `import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
+${demoSafeReturnToImport}
 
 const DEFAULT_RETURN_TO = '/demo/atproto';
 
-function safeReturnTo(value: string | null | undefined): string {
-\tif (!value) return DEFAULT_RETURN_TO;
-\ttry {
-\t\tconst decoded = decodeURIComponent(value);
-\t\tif (decoded.startsWith('/') && !decoded.startsWith('//')) return decoded;
-\t} catch {}
-\treturn DEFAULT_RETURN_TO;
-}
+${demoSafeReturnTo}
 
 export const load: PageServerLoad = ({ locals, url }) => {
 \tconst returnTo = safeReturnTo(url.searchParams.get('returnTo'));
@@ -938,31 +952,6 @@ export const load: PageServerLoad = ({ locals, url }) => {
 \treturn { returnTo };
 };
 `;
-
-/**
- * Add `kit.experimental.remoteFunctions: true` to a fresh sv-create
- * `svelte.config.js`. No-op if missing or already enabled.
- *
- * @param {string} content
- */
-function patchSvelteConfig(content) {
-	if (content.length === 0) return content;
-	if (/remoteFunctions\s*:\s*true/m.test(content)) return content;
-
-	// Try to inject inside an existing `kit: { ... }` block.
-	if (/kit\s*:\s*\{/m.test(content)) {
-		// If `experimental: { ... }` already exists inside kit, add remoteFunctions there.
-		if (/experimental\s*:\s*\{/m.test(content)) {
-			return content.replace(
-				/experimental\s*:\s*\{/,
-				'experimental: { remoteFunctions: true,'
-			);
-		}
-		return content.replace(/kit\s*:\s*\{/, 'kit: {\n\t\texperimental: { remoteFunctions: true },');
-	}
-	return content; // unrecognized shape
-}
-
 
 // ---------------------------------------------------------------------------
 // Browser mode templates
