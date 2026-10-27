@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+import { promisify, stripVTControlCharacters } from 'node:util';
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 
@@ -65,6 +65,13 @@ export async function verifyApp(cwd, options) {
 	await verifyPreview(cwd, options);
 }
 
+export function findPreviewOrigin(output) {
+	// CI can color the port separately from the hostname. Strip terminal
+	// formatting from the accumulated output, and wait for the trailing slash
+	// so a chunk ending midway through the port cannot produce a partial URL.
+	return stripVTControlCharacters(output).match(/http:\/\/127\.0\.0\.1:\d+(?=\/)/)?.[0];
+}
+
 // Exercise the actual Kit runtime, not just bundling: the OAuth hook must
 // serve metadata/JWKS, and generated login pages must render successfully.
 async function verifyPreview(cwd, options) {
@@ -80,8 +87,8 @@ async function verifyPreview(cwd, options) {
 			const timeout = setTimeout(() => reject(new Error(`Preview startup timed out: ${output}`)), 20_000);
 			const capture = (chunk) => {
 				output += chunk.toString();
-				const match = output.match(/http:\/\/127\.0\.0\.1:\d+/);
-				if (match) { clearTimeout(timeout); resolve(match[0]); }
+				const origin = findPreviewOrigin(output);
+				if (origin) { clearTimeout(timeout); resolve(origin); }
 			};
 			child.stdout.on('data', capture);
 			child.stderr.on('data', capture);
